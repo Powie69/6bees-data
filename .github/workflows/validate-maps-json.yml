@@ -1,0 +1,65 @@
+name: Validate maps.json
+
+on:
+  push:
+    paths:
+      - "0.1.0/maps.json"
+  pull_request:
+    paths:
+      - "0.1.0/maps.json"
+  workflow_dispatch:
+
+env:
+  FILE_PATH: 0.1.0/maps.json
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check file is valid JSON
+        run: jq empty "$FILE_PATH"
+
+      - name: Check file is minified
+        run: |
+          minified="$(jq -c . "$FILE_PATH")"
+          original="$(cat "$FILE_PATH")"
+          if [ "$original" != "$minified" ]; then
+            echo "::error::maps.json is not minified"
+            diff <(echo "$original") <(echo "$minified") || true
+            exit 1
+          fi
+
+      - name: Check every value is an integer
+        run: |
+          bad_count=$(jq '[.[] | select((type != "number") or (. != (. | floor)))] | length' "$FILE_PATH")
+          if [ "$bad_count" -ne 0 ]; then
+            echo "::error::Found $bad_count non-integer value(s)"
+            jq -c '[.[] | select((type != "number") or (. != (. | floor)))]' "$FILE_PATH"
+            exit 1
+          fi
+
+      - name: Check for duplicates
+        run: |
+          total=$(jq 'length' "$FILE_PATH")
+          unique=$(jq 'unique | length' "$FILE_PATH")
+          if [ "$total" -ne "$unique" ]; then
+            echo "::error::Found $((total - unique)) duplicate value(s)"
+            jq -c 'group_by(.) | map(select(length > 1) | .[0])' "$FILE_PATH"
+            exit 1
+          fi
+
+      - name: Check alphabetical (lexicographic) sort order
+        run: |
+          jq -r '.[] | tostring' "$FILE_PATH" > values.txt
+          if ! LC_ALL=C sort -c values.txt 2>sort_error.txt; then
+            echo "::error::Values are not sorted alphabetically (lexicographically)"
+            cat sort_error.txt
+            exit 1
+          fi
+
+      - name: All checks passed
+        run: |
+          echo "maps.json is valid: minified, alphabetically sorted, no duplicates, all integers."
