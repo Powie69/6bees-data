@@ -8,6 +8,7 @@ on:
     paths:
       - "0.1.0/maps.json"
   workflow_dispatch:
+  workflow_call:
 
 env:
   FILE_PATH: 0.1.0/maps.json
