@@ -1,0 +1,85 @@
+name: Diff checker
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  bot:
+    if: >-
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@diff') &&
+      (
+        github.event.comment.user.login == github.event.issue.user.login ||
+        github.event.comment.user.login == github.repository_owner
+      )
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Compare maps.json
+        env:
+          GH_TOKEN: ${{ secrets.DIFF_BOT_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          # PR head lives on the fork for fork PRs; SHA is not on the base repo.
+          IFS=$'\t' read -r PR_SHA HEAD_REPO <<< "$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '[.head.sha, .head.repo.full_name] | @tsv')"
+
+          # Download the JSON files from GitHub.
+          gh api "repos/$HEAD_REPO/contents/0.1.0/maps.json?ref=$PR_SHA" \
+            --jq '.content' | base64 -d > pr-maps.json
+
+          gh api "repos/$REPO/contents/0.1.0/maps.json?ref=main" \
+            --jq '.content' | base64 -d > main-maps.json
+
+          # Extract the numbers and sort them lexicographically.
+          jq -r '.[]' main-maps.json | LC_ALL=C sort > main-numbers.txt
+          jq -r '.[]' pr-maps.json | LC_ALL=C sort > pr-numbers.txt
+
+          # Compare the lists.
+          comm -13 main-numbers.txt pr-numbers.txt > added.txt
+          comm -23 main-numbers.txt pr-numbers.txt > removed.txt
+
+          # Build the PR comment.
+          {
+            echo "## Maps Diff"
+            echo
+            echo "**Compared:** \`0.1.0/maps.json\` against \`main\`"
+            echo
+
+            if [ -s added.txt ]; then
+              echo "### Added ($(wc -l < added.txt | tr -d ' '))"
+              echo '```diff'
+              sed 's/^/+/' added.txt
+              echo '```'
+              echo
+            else
+              echo "### Added (0)"
+              echo "None."
+              echo
+            fi
+
+            if [ -s removed.txt ]; then
+              echo "### Removed ($(wc -l < removed.txt | tr -d ' '))"
+              echo '```diff'
+              sed 's/^/-/' removed.txt
+              echo '```'
+              echo
+            else
+              echo "### Removed (0)"
+              echo "None."
+              echo
+            fi
+          } > reply.md
+
+          # Post the result on the PR.
+          gh issue comment "$PR_NUMBER" \
+            --repo "$REPO" \
+            --body-file reply.md
